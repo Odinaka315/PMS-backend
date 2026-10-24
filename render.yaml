@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: pms-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FIELD_ENCRYPTION_KEY   # Fernet key; generate once and keep it safe (losing it makes bank data unreadable)
+        sync: false
+      - key: DATABASE_URL           # Neon pooled connection string
+        sync: false
+      - key: MIGRATION_DATABASE_URL # Neon direct connection string
+        sync: false
+      - key: CORS_ORIGINS           # e.g. ["https://pms.example.org"]
+        sync: false
