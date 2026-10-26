@@ -12,7 +12,7 @@ from app.core.roles import Role
 from app.core.security import generate_temp_password, hash_password
 from app.models import Staff, User
 from app.modules.auth.schemas import EMAIL_PATTERN, UserOut
-from app.modules.auth.service import revoke_all, user_out, validate_new_password
+from app.modules.auth.service import revoke_all, user_out
 from app.modules.users.service import initial_expiry
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -26,11 +26,12 @@ class UserCreate(BaseModel):
     email: str = Field(pattern=EMAIL_PATTERN, max_length=255)
     role: Role
     staff_id: uuid.UUID | None = None
-    password: str | None = Field(default=None, max_length=200)  # omitted -> a temporary one is generated
+    # No password field: the system generates a one-time password and returns it once, so nobody chooses (or knows)
+    # a password except the account's owner, after their first sign-in.
 
 
 class UserCreated(UserOut):
-    temporary_password: str | None = None
+    temporary_password: str  # shown once; hand it to the account's owner
 
 
 class UserPatch(BaseModel):
@@ -67,14 +68,8 @@ async def create_user(body: UserCreate, request: Request, actor: User = Depends(
         if await session.scalar(select(User.id).where(User.staff_id == staff.id)):
             raise HTTPException(409, "This staff member already has an account")
 
-    temp = None
-    password = body.password
-    if password is None:
-        password = temp = generate_temp_password()
-    else:
-        validate_new_password(password, email)
-
-    user = User(email=email, password_hash=hash_password(password), role=body.role.value,
+    temp = generate_temp_password()
+    user = User(email=email, password_hash=hash_password(temp), role=body.role.value,
                 staff_id=body.staff_id, must_change_password=True, password_expires_at=initial_expiry())
     session.add(user)
     await session.flush()
@@ -86,8 +81,9 @@ async def create_user(body: UserCreate, request: Request, actor: User = Depends(
 
 
 @router.get("", response_model=UserPage)
-async def list_users(q: str | None = None, role: Role | None = None, page: int = Query(1, ge=1),
-                     size: int = Query(25, ge=1, le=100),
+async def list_users(q: str | None = None, role: Role | None = None,
+                     awaiting_first_login: bool = Query(False, description="Only accounts still on their one-time password"),
+                     page: int = Query(1, ge=1), size: int = Query(25, ge=1, le=100),
                      _: User = Depends(require_roles(Role.HR, Role.SUPERADMIN)),
                      session: AsyncSession = Depends(get_session)):
     stmt = select(User).outerjoin(Staff, User.staff_id == Staff.id)
@@ -97,6 +93,9 @@ async def list_users(q: str | None = None, role: Role | None = None, page: int =
                               func.lower(Staff.last_name).like(like)))
     if role:
         stmt = stmt.where(User.role == role.value)
+    if awaiting_first_login:
+        # Lets HR chase people who have not signed in yet; password_expires_at shows who is about to be locked out.
+        stmt = stmt.where(User.must_change_password.is_(True))
     total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = (await session.scalars(stmt.order_by(User.email).offset((page - 1) * size).limit(size))).unique().all()
     return UserPage(items=[user_out(u) for u in rows], total=total or 0, page=page, size=size)

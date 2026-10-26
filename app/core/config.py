@@ -26,14 +26,8 @@ class Settings(BaseSettings):
     lockout_minutes: int = 15
     min_password_length: int = 8
 
-    # Initial passwords for accounts created by HR, including the account made automatically when HR creates a staff record.
-    #   shared: every new account starts with INITIAL_PASSWORD (simple, but see the README: anyone who knows it and a
-    #           new colleague's email can sign in first)
-    #   random: each account gets its own password, shown once to HR (recommended)
-    # Either way the user is forced to choose their own password at first login, and an unused initial password stops
-    # working after INITIAL_PASSWORD_DAYS.
-    initial_password_mode: str = "shared"  # shared | random
-    initial_password: str = ""  # shared mode only; defaults to hospital123 outside production, must be set in production
+    # Every account HR creates gets its own random one-time password, shown to HR once. The user must choose their own
+    # at first sign-in, and an unused one-time password stops working after INITIAL_PASSWORD_DAYS.
     initial_password_days: int = 14
     auto_create_accounts: bool = True  # create a login automatically when HR creates a staff record
 
@@ -57,15 +51,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _production_guard(self):
-        if self.initial_password_mode not in ("shared", "random"):
-            raise ValueError("INITIAL_PASSWORD_MODE must be 'shared' or 'random'")
-        if self.initial_password_mode == "shared":
-            if not self.initial_password:
-                if self.environment == "production":
-                    raise ValueError("INITIAL_PASSWORD must be set in production when INITIAL_PASSWORD_MODE=shared")
-                self.initial_password = "hospital123"
-            if len(self.initial_password) < self.min_password_length:
-                raise ValueError(f"INITIAL_PASSWORD must be at least {self.min_password_length} characters")
         if self.storage_backend not in ("local", "r2"):
             raise ValueError("STORAGE_BACKEND must be 'local' or 'r2'")
         if self.storage_backend == "r2":

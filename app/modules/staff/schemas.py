@@ -157,8 +157,9 @@ class AccountInfo(BaseModel):
     email: str  # the login name
     must_change_password: bool
     initial_password_expires_at: datetime | None
-    # Only in INITIAL_PASSWORD_MODE=random: the one-time password for HR to hand over. Never shown again.
-    temporary_password: str | None = None
+    # The one-time password for HR to hand to the new user. Shown only in this response; it cannot be retrieved later
+    # (use POST /users/{id}/reset-password to issue a new one).
+    temporary_password: str
 
 
 class StaffProfile(BaseModel):

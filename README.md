@@ -9,7 +9,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m app.seed --reset        # SQLite file dev.db + mock data
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
-pytest                            # 85 tests
+pytest                            # 88 tests
 ```
 
 Demo logins (same as the frontend): `staff|hod|hr|director|superadmin@hospital.test`, password `hospital123`.
@@ -70,30 +70,28 @@ Not yet done: virus scanning (recommended before wide rollout; a ClamAV service 
 ## Accounts and first sign-in
 
 When HR creates a staff record (`POST /staff`) the staff member's login is created in the same transaction, so either both
-exist or neither does. The login name is the staff member's **email**, the role is `staff`, and the password is the initial
-password (stored hashed with Argon2, like every password). The response includes an `account` block, or an `account_note`
-saying why no login was made (no email, or `create_account: false`). Add the email later and call `POST /staff/{id}/account`.
+exist or neither does. The login name is the staff member's **email** and the role is `staff`. Every account gets its **own random
+one-time password** (for example `k7mq-h2rx-9pwd`: lowercase letters and digits, no look-alike characters, easy to read out or
+write down). It is stored hashed with Argon2 and returned **once**, in `account.temporary_password`, so HR can pass it to the
+new user. HR cannot choose passwords. The response includes an `account_note` instead when no login was made (no email, or
+`create_account: false`); add the email later and call `POST /staff/{id}/account`.
+
+The one-time password is never shown again and never written to the audit log. API responses carry `Cache-Control: no-store`
+so browsers and proxies do not keep it. If HR loses it, `POST /users/{id}/reset-password` issues a new one the same way.
 
 First sign-in: `POST /auth/login` returns `must_change_password: true`. Until the person has chosen their own password, **every
 other endpoint answers 403** with `{"detail": {"code": "password_change_required", ...}}`; only `/auth/me`, `/auth/logout`,
 `/auth/logout-all` and `/auth/change-password` work. The frontend should send the user to a change-password screen when it sees
 that flag or code. `POST /auth/change-password` signs out every other device and returns fresh tokens, so no second sign-in is needed.
-The new password must differ from the current one, meet the minimum length, and not be the initial password.
+The new password must differ from the current one and meet the minimum length.
 
-An initial password that is never used stops working after `INITIAL_PASSWORD_DAYS` (default 14); HR resets it with
-`POST /users/{id}/reset-password`.
+An unused one-time password stops working after `INITIAL_PASSWORD_DAYS` (default 14). `GET /users?awaiting_first_login=true`
+lists the people who have not signed in yet, so HR can chase them or reset their password.
 
 | Setting | Meaning |
 |---|---|
-| `INITIAL_PASSWORD_MODE=shared` | every new account starts with `INITIAL_PASSWORD` (default outside production: `hospital123`; **must be set explicitly in production**) |
-| `INITIAL_PASSWORD_MODE=random` | each account gets its own one-time password, shown once to HR in the `account.temporary_password` field |
-| `INITIAL_PASSWORD_DAYS` | how long an unused initial password works (default 14) |
+| `INITIAL_PASSWORD_DAYS` | how long an unused one-time password works (default 14) |
 | `AUTO_CREATE_ACCOUNTS` | turn automatic account creation off entirely |
-
-**Know the risk of `shared`:** anyone who knows the initial password and a new colleague's email can sign in first, choose their own
-password, and take over that account before the real person does. The expiry window limits how long this is possible but does
-not remove it. `random` closes the gap, because the password is different for every person and only HR sees it.
-`hospital123` is also the demo password published in the frontend's README, so do not use it in production.
 
 ## Security model
 

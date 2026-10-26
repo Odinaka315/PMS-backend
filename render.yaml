@@ -18,10 +18,6 @@ services:
         sync: false
       - key: MIGRATION_DATABASE_URL # Neon direct connection string
         sync: false
-      - key: INITIAL_PASSWORD_MODE  # shared | random (random is safer; see README "Accounts and first sign-in")
-        value: shared
-      - key: INITIAL_PASSWORD       # required while mode is shared; choose your own, never the demo password
-        sync: false
       - key: STORAGE_BACKEND
         value: r2
       - key: R2_ACCOUNT_ID

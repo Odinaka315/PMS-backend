@@ -28,6 +28,17 @@ app.add_middleware(
 )
 
 API = API_PREFIX
+
+
+@app.middleware("http")
+async def no_store(request, call_next):
+    """API responses hold personal data, and some hold a one-time password, so no browser or proxy may cache them."""
+    response = await call_next(request)
+    if request.url.path.startswith(API) and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 for r in (auth_router, users_router, org_router, staff_router, leave_router, documents_router, reports_router):
     app.include_router(r, prefix=API)
 if settings.storage_backend == "local" and settings.environment != "production":

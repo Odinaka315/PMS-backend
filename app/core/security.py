@@ -36,8 +36,15 @@ def verify_password(password_hash: str | None, password: str) -> bool:
         return False
 
 
+# Lowercase letters and digits with the look-alikes removed (no 0/o, 1/l/i), so HR can read a password out loud or
+# write it down and the new user can type it without guessing. 12 symbols from 31 is about 59 bits of randomness.
+_READABLE = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
 def generate_temp_password() -> str:
-    return secrets.token_urlsafe(9)  # 12 chars
+    """A one-time password for a new or reset account, e.g. 'k7mq-h2rx-9pwd'."""
+    chars = "".join(secrets.choice(_READABLE) for _ in range(12))
+    return "-".join(chars[i:i + 4] for i in range(0, 12, 4))
 
 
 def create_access_token(user_id, role: str) -> str:

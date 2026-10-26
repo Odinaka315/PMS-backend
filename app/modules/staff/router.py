@@ -204,7 +204,7 @@ async def update_my_profile(body: StaffSelfUpdate, request: Request, user: User 
     return await _apply_update(session, request, user, s, body.model_dump(exclude_unset=True))
 
 
-def _account_info(u: User, temp: str | None) -> AccountInfo:
+def _account_info(u: User, temp: str) -> AccountInfo:
     return AccountInfo(user_id=u.id, email=u.email, must_change_password=u.must_change_password,
                        initial_password_expires_at=u.password_expires_at, temporary_password=temp)
 
@@ -213,8 +213,8 @@ def _account_info(u: User, temp: str | None) -> AccountInfo:
 async def create_staff(body: StaffCreate, request: Request, user: User = Depends(HR_ONLY),
                        session: AsyncSession = Depends(get_session)):
     """Creates the staff record and, by default, their login in the same transaction: either both exist or neither.
-    The login name is the staff member's email; the starting password follows INITIAL_PASSWORD_MODE, and the person
-    must choose their own password at first sign-in."""
+    The login name is the staff member's email; the starting password is a random one-time
+    password returned once to HR, and the person must choose their own password at first sign-in."""
     data = body.model_dump()
     want_account = data.pop("create_account") and settings.auto_create_accounts
     await _validate_refs(session, data)

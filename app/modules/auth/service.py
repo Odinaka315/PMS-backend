@@ -119,8 +119,7 @@ def validate_new_password(password: str, email: str, current: str | None = None)
         raise HTTPException(422, f"Password must be at least {settings.min_password_length} characters")
     if current is not None and password == current:
         raise HTTPException(422, "Your new password must be different from your current one")
-    weak = {"password", "hospital123", "12345678", settings.initial_password.lower()} - {""}
-    if password.lower() == email.lower() or password.lower() in weak:
+    if password.lower() == email.lower() or password.lower() in {"password", "hospital123", "12345678"}:
         raise HTTPException(422, "Password is too easy to guess")
 
 
