@@ -19,10 +19,23 @@ from app.core.security import encrypt_field, hash_password, utcnow
 from app.core.storage import LocalStorage, get_storage
 from app.models import (
     Base, BankAccount, Dependant, Department, Document, Education, EmergencyContact, GradeLevel, LeaveDecision, LeaveRequest,
-    LeaveType, LeaveWorkflowStep, MedicalLicense, Staff, User,
+    LeaveType, LeaveWorkflowStep, MedicalLicense, Notification, PayComponent, PayrollRun, SalaryScale, Staff, User,
 )
 
 DEMO_PASSWORD = "hospital123"
+
+# PLACEHOLDER pay structure (monthly, naira). The hospital has not confirmed its real scales or allowances.
+SCALE_BASE, SCALE_PER_LEVEL, SCALE_STEP_RATE, SCALE_STEPS = 50_000, 22_000, 0.03, 9
+# (code, name, kind, method, percent_bps, sort_order)
+PLACEHOLDER_COMPONENTS = [
+    ("HOUSING", "Housing allowance", "earning", "percent_of_basic", 2500, 10),
+    ("TRANSPORT", "Transport allowance", "earning", "percent_of_basic", 1000, 20),
+    ("UTILITY", "Utility allowance", "earning", "percent_of_basic", 500, 30),
+    ("HAZARD", "Hazard allowance", "earning", "percent_of_basic", 1500, 40),
+    ("PENSION", "Pension (employee)", "deduction", "percent_of_basic", 800, 10),
+    ("NHF", "National Housing Fund", "deduction", "percent_of_basic", 250, 20),
+    ("TAX", "Income tax (placeholder flat rate)", "deduction", "percent_of_gross", 1000, 30),
+]
 
 # A tiny but valid one-page PDF, used as the content of every mock document.
 MOCK_PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -73,6 +86,39 @@ DESIGNATIONS = {
     "Administration": ["Administrative Officer", "Executive Officer"], "Human Resources": ["HR Officer"],
     "IT": ["ICT Officer"],
 }
+
+
+async def seed_payroll(session: AsyncSession, users: dict[str, User], grades: dict[int, GradeLevel]) -> None:
+    """Placeholder pay structure, one paid run for last month so the demo staff member has a payslip, and a few
+    notifications so the bell is not empty."""
+    from app.modules.payroll import service as payroll
+
+    for lv, g in grades.items():
+        for step in range(1, SCALE_STEPS + 1):
+            naira = round((SCALE_BASE + (lv - 1) * SCALE_PER_LEVEL) * (1 + SCALE_STEP_RATE * (step - 1)), -2)
+            session.add(SalaryScale(grade_level_id=g.id, step=step, basic_kobo=int(naira) * 100))
+    for code, name, kind, method, bps, order in PLACEHOLDER_COMPONENTS:
+        session.add(PayComponent(code=code, name=name, kind=kind, method=method, rate_bps=bps, sort_order=order))
+    await session.flush()
+
+    last = date.today().replace(day=1) - timedelta(days=1)
+    now = utcnow()
+    run = PayrollRun(year=last.year, month=last.month, period=payroll.period_int(last.year, last.month),
+                     created_by=users["hr"].id, status="Paid", approved_by=users["director"].id, approved_at=now,
+                     paid_by=users["hr"].id, paid_at=now)
+    session.add(run)
+    await session.flush()
+    await payroll.calculate(session, run)
+    label = payroll.label(run.year, run.month)
+    session.add_all([
+        Notification(user_id=users["staff"].id, type="payroll", title="Payslip available",
+                     text=f"Your {label} payslip is ready.", link="/salary", created_at=now),
+        Notification(user_id=users["staff"].id, type="document", title="Document verified",
+                     text="Your Appointment Letter was verified.", link="/documents", created_at=now - timedelta(days=3),
+                     read_at=now - timedelta(days=2)),
+        Notification(user_id=users["hr"].id, type="document", title="Document awaiting verification",
+                     text="A First Aid Certificate was uploaded.", link="/documents", created_at=now - timedelta(hours=5)),
+    ])
 
 
 async def seed(session: AsyncSession, extra_staff: int = 40) -> None:
@@ -225,6 +271,7 @@ async def seed(session: AsyncSession, extra_staff: int = 40) -> None:
                 verified_at=now if status != "Pending" else None,
                 rejection_reason="Scan is not legible; please upload a clearer copy." if status == "Rejected" else None))
 
+    await seed_payroll(session, users, grades)
     await session.commit()
     total = len(FRONTEND_STAFF) + extra_staff
     print(f"Seeded {len(DEPARTMENTS)} departments, {total} staff, {len(accounts)} demo accounts "

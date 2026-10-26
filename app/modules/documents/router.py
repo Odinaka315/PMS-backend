@@ -24,6 +24,8 @@ from app.core.security import as_utc, utcnow
 from app.core.storage import Storage, get_storage
 from app.models import Document, Staff, User
 
+from app.modules.notifications.service import notify, user_id_for_staff, users_with_role
+
 from . import rules
 from .schemas import DocumentInit, DocumentOut, DownloadOut, ExpiringOut, UploadInitOut, UploadTarget, VerifyIn
 
@@ -173,6 +175,10 @@ async def complete_upload(doc_id: uuid.UUID, request: Request, user: User = Depe
     audit.record(session, user=user, action="document_uploaded", entity="document", entity_id=doc.id,
                  subject_staff_id=doc.staff_id,
                  after={"type": doc.doc_type, "name": doc.name, "size_bytes": info.size}, request=request)
+    owner = await session.get(Staff, doc.staff_id)
+    await notify(session, await users_with_role(session, "hr"), type="document", title="Document awaiting verification",
+                 text=f"{owner.full_name} uploaded a {doc.doc_type} document.", link="/documents", entity_id=doc.id,
+                 exclude=user.id)
     await session.commit()
     return to_out(user, doc)
 
@@ -249,6 +255,12 @@ async def verify_document(doc_id: uuid.UUID, body: VerifyIn, request: Request,
     audit.record(session, user=user, action=f"document_{doc.status.lower()}", entity="document", entity_id=doc.id,
                  subject_staff_id=doc.staff_id, after={"status": doc.status, "reason": doc.rejection_reason},
                  request=request)
+    owner_uid = await user_id_for_staff(session, doc.staff_id)
+    if owner_uid:
+        ok = doc.status == "Verified"
+        await notify(session, [owner_uid], type="document", title=f"Document {doc.status.lower()}",
+                     text=f"Your {doc.name} was verified." if ok else f"Your {doc.name} was rejected: {doc.rejection_reason}",
+                     link="/documents", entity_id=doc.id)
     await session.commit()
     return to_out(user, doc)
 

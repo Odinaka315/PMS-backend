@@ -10,6 +10,8 @@ from app.core.roles import Role
 from app.core.security import utcnow
 from app.models import LeaveDecision, LeaveRequest, LeaveType, LeaveWorkflowStep, Staff, User
 
+from app.modules.notifications.service import notify, user_id_for_staff, users_with_role
+
 from .schemas import BalanceOut, BalanceRow, LeaveOut, StepOut
 
 
@@ -114,6 +116,8 @@ async def create_request(session: AsyncSession, user: User, data, request) -> Le
     audit.record(session, user=user, action="leave_requested", entity="leave_request", entity_id=req.id,
                  subject_staff_id=user.staff_id,
                  after={"type": ltype.name, "start": data.start_date, "end": data.end_date, "days": days}, request=request)
+    if first:
+        await notify_approvers(session, first.role, req, ltype.name, user.staff, exclude=user.id)
     return req
 
 
@@ -145,6 +149,24 @@ async def decide(session: AsyncSession, user: User, req: LeaveRequest, decision:
             req.current_step_order, req.current_step_role = nxt.step_order, nxt.role
     audit.record(session, user=user, action=f"leave_{decision}d", entity="leave_request", entity_id=req.id,
                  subject_staff_id=req.staff_id, after={"status": req.status, "comment": comment}, request=request)
+
+    # Tell the requester when it is settled, and the next approver when it is their turn.
+    if req_user and req.status in ("Approved", "Declined"):
+        verb = "approved" if req.status == "Approved" else "declined"
+        await notify(session, [req_user.id], type="leave", title=f"Leave request {verb}",
+                     text=f"Your {req.leave_type.name.lower()} request ({req.start_date:%d %b} to {req.end_date:%d %b %Y}) was {verb}.",
+                     link="/leave", entity_id=req.id)
+    elif req.status == "Pending":
+        await notify_approvers(session, req.current_step_role, req, req.leave_type.name, req.staff, exclude=user.id)
+
+
+async def notify_approvers(session: AsyncSession, role: str, req: LeaveRequest, type_name: str, staff: Staff,
+                           exclude=None) -> None:
+    ids = await users_with_role(session, role, department_id=staff.department_id)
+    own = await user_id_for_staff(session, req.staff_id)  # nobody is asked to approve their own request
+    await notify(session, [i for i in ids if i != own], type="leave", title="Leave awaiting your approval",
+                 text=f"{staff.full_name} requested {req.days} day(s) of {type_name.lower()}.",
+                 link="/leave", entity_id=req.id, exclude=exclude)
 
 
 def visible_filter(user: User):

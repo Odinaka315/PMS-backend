@@ -9,7 +9,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m app.seed --reset        # SQLite file dev.db + mock data
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
-pytest                            # 88 tests
+pytest                            # 138 tests
 ```
 
 Demo logins (same as the frontend): `staff|hod|hr|director|superadmin@hospital.test`, password `hospital123`.
@@ -35,7 +35,7 @@ Tested against PostgreSQL 16 as well as SQLite.
 ```
 app/core/      config, db, security (argon2, JWT, field encryption), deps (RBAC + data scope), audit
 app/models/    SQLAlchemy models
-app/modules/   auth, users, org, staff, leave, documents, reports   (router.py [+ schemas.py, service.py])
+app/modules/   auth, users, org, staff, leave, documents, payroll, notifications, reports   (router.py [+ schemas.py, service.py])
 alembic/       migrations      tests/   pytest suite      app/seed.py   mock data
 ```
 
@@ -49,6 +49,8 @@ alembic/       migrations      tests/   pytest suite      app/seed.py   mock dat
 | Staff | `GET /staff` (search, filters, paging), `POST /staff` (also creates the login), `POST /staff/{id}/account`, `GET/PATCH/DELETE /staff/{id or file number}`, `GET/PATCH /staff/me`, `GET /staff/lookup`, `GET /staff/{id}/audit`, education / dependants / emergency-contact / license / bank sub-resources |
 | Leave | `GET /leave/types`, `/leave/balance`; `POST/GET /leave/requests` (`?awaiting_me=true`), `GET /leave/requests/{id}`, `POST …/decision`, `POST …/cancel` |
 | Documents | `POST /staff/{id}/documents` (start an upload), `POST /documents/{id}/complete`, `GET /staff/{id}/documents`, `GET /documents/{id}`, `GET /documents/{id}/download`, `POST /documents/{id}/verify`, `DELETE /documents/{id}`, `GET /documents/expiring` |
+| Payroll | `GET/PUT /payroll/scales`, `GET/POST /payroll/components`, `PUT /payroll/components/{id}`, `POST/GET /payroll/adjustments`, `DELETE /payroll/adjustments/{id}`, `POST/GET /payroll/runs`, `GET/DELETE /payroll/runs/{id}`, `POST …/recalculate`, `…/approve`, `…/pay`, `GET …/payslips`, `GET …/export` (CSV), `GET /payroll/summary`, `GET /payroll/payslips/me`, `GET /payroll/payslips/{id}` |
+| Notifications | `GET /notifications` (`?unread_only=true&type=`), `GET /notifications/unread-count`, `POST /notifications/{id}/read`, `POST /notifications/read-all`, `DELETE /notifications/{id}`, `POST /notifications/sweep` (HR) |
 | Reports | `GET /reports/dashboard` (role-aware KPIs and chart data) |
 
 ## Documents and Cloudflare R2
@@ -93,6 +95,53 @@ lists the people who have not signed in yet, so HR can chase them or reset their
 | `INITIAL_PASSWORD_DAYS` | how long an unused one-time password works (default 14) |
 | `AUTO_CREATE_ACCOUNTS` | turn automatic account creation off entirely |
 
+## Payroll
+
+**Every figure is a placeholder.** The hospital has not given us its pay structure, so the seeder invents a monthly basic
+scale (CONHESS 1-15, steps 1-9), allowances (housing 25%, transport 10%, utility 5%, hazard 15% of basic) and deductions
+(pension 8% and NHF 2.5% of basic, a flat 10% "tax" of gross). Nothing is seeded in production: HR enters the real scale
+(`PUT /payroll/scales`) and real allowances/deductions (`/payroll/components`, optionally limited to a range of grade levels)
+before the first run. Real PAYE bands are not modelled. Replace the flat placeholder when the hospital confirms the rules.
+
+**A run** is one month. HR creates it (`POST /payroll/runs`), which calculates a payslip for every Active or On Leave
+staff member (suspended, retired and exited staff are left out, a placeholder rule). While it is a **Draft** HR can
+recalculate or delete it. Then **a director or the super admin approves it (never the person who created it)** and **HR marks it
+Paid**. This system records payment; it does not move money. Staff can only see their own payslip, and only once the run is
+Paid. HR, director and super admin can see everyone's at any stage, and HR/director/super admin viewing someone else's
+payslip is written to the audit log (the event, never the figures). HODs see only their own payslip.
+
+**Exceptions:** anyone who cannot be paid correctly is flagged on their payslip and counted on the run: no grade or step, no
+salary scale for their grade and step, no bank account on record, or deductions larger than gross pay. A run with exceptions
+can only be approved with `acknowledge_exceptions: true`, so nobody is paid wrongly by accident.
+
+**Payslips are snapshots.** Changing the scale, an allowance or a staff member's grade later never alters a payslip already
+produced; a Draft picks up the changes only when HR recalculates it. Individual extras (call duty, loan repayment,
+arrears) are `/payroll/adjustments` covering a range of months; cancelling one keeps the record.
+
+Money is stored as whole kobo (integers), percentages in basis points, rounding half up, so there is no floating-point drift.
+Bank account numbers are never put on a payslip or export, only the last four digits. The CSV export (HR and director) guards
+against spreadsheet formula injection. Not built: PDF payslips and bank transfer files (the bank's format is needed).
+
+## Notifications
+
+In-app only. Each notification belongs to one user, who alone can read, mark read or dismiss it (anyone else gets 404). Text
+is a pointer and never contains salaries or personal numbers. They are created in the same transaction as the event, so a
+rejected action tells nobody anything:
+
+| Event | Who is told |
+|---|---|
+| Leave requested, or approved by the previous step | the approvers for the next step (the department's HOD, or HR, or the director) |
+| Leave finally approved or declined | the requester |
+| Document uploaded | HR |
+| Document verified or rejected | its owner (with the reason) |
+| Payroll run created | directors |
+| Payroll approved | HR |
+| Payroll marked paid | each paid staff member ("Payslip available") |
+| `POST /notifications/sweep` (HR): documents and licences expiring within `days` (default 30) | the owner, once per item |
+
+There is no background scheduler yet, so the expiry sweep is called by hand (safe to repeat) and can be wired to a scheduled
+job later. Email and SMS are not built, so the frontend's email/frequency toggles have nothing behind them yet.
+
 ## Security model
 
 - **Roles:** staff, hod, hr, director, superadmin. **Data scope** is enforced in the query layer: staff see themselves, an HOD sees their department, HR/director/superadmin see everyone. Out-of-scope records return 404, not 403.
@@ -106,8 +155,9 @@ lists the people who have not signed in yet, so HR can chase them or reset their
 - **Leave:** entitlements (annual 15, sick 10, compassionate 5) are placeholders from the frontend mock; days are counted as calendar days; the approval chain HOD → HR → Director is configurable per leave type in `leave_workflow_steps`; an approver's own request skips their level.
 - **Retirement:** 60 years of age or 35 years of service, whichever is first (`RETIREMENT_AGE`, `RETIREMENT_SERVICE_YEARS`).
 - **Departments, grade levels (CONHESS 1–15), designations** are mock; replace via the API or seed.
-- **Promotion rules, payroll/CONHESS salary table:** not built yet, waiting on real rules.
+- **Payroll:** the scale, allowances, deductions, who is paid (Active and On Leave only) and the tax rate are placeholders (see Payroll).
+- **Promotion rules:** not built yet, waiting on real rules.
 
 ## Not built yet
 
-Payroll and payslips, promotions, queries, performance appraisals, notifications (email/SMS), exports (PDF/Excel/CSV), TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.
+Promotions, queries, performance appraisals, email/SMS notifications and a scheduler, PDF payslips and bank transfer files, TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.
