@@ -9,7 +9,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m app.seed --reset        # SQLite file dev.db + mock data
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
-pytest                            # 32 tests
+pytest                            # 62 tests
 ```
 
 Demo logins (same as the frontend): `staff|hod|hr|director|superadmin@hospital.test`, password `hospital123`.
@@ -35,7 +35,7 @@ Tested against PostgreSQL 16 as well as SQLite.
 ```
 app/core/      config, db, security (argon2, JWT, field encryption), deps (RBAC + data scope), audit
 app/models/    SQLAlchemy models
-app/modules/   auth, users, org, staff, leave, reports   (router.py [+ schemas.py, service.py])
+app/modules/   auth, users, org, staff, leave, documents, reports   (router.py [+ schemas.py, service.py])
 alembic/       migrations      tests/   pytest suite      app/seed.py   mock data
 ```
 
@@ -48,7 +48,24 @@ alembic/       migrations      tests/   pytest suite      app/seed.py   mock dat
 | Org | `GET/POST /departments`, `GET /grades` |
 | Staff | `GET /staff` (search, filters, paging), `POST /staff`, `GET/PATCH/DELETE /staff/{id or file number}`, `GET/PATCH /staff/me`, `GET /staff/lookup`, `GET /staff/{id}/audit`, education / dependants / emergency-contact / license / bank sub-resources |
 | Leave | `GET /leave/types`, `/leave/balance`; `POST/GET /leave/requests` (`?awaiting_me=true`), `GET /leave/requests/{id}`, `POST …/decision`, `POST …/cancel` |
+| Documents | `POST /staff/{id}/documents` (start an upload), `POST /documents/{id}/complete`, `GET /staff/{id}/documents`, `GET /documents/{id}`, `GET /documents/{id}/download`, `POST /documents/{id}/verify`, `DELETE /documents/{id}`, `GET /documents/expiring` |
 | Reports | `GET /reports/dashboard` (role-aware KPIs and chart data) |
+
+## Documents and Cloudflare R2
+
+Files live in a **private** R2 bucket; the database holds only metadata. The browser uploads and downloads directly through
+short-lived signed links, so file bytes never pass through this server.
+
+1. `POST /staff/{id}/documents` with `doc_type`, `filename`, `content_type`, `size` returns the document and a signed `upload` target (`url`, `method`, `headers`, valid 5 minutes, bound to that exact type and size).
+2. The browser `PUT`s the file to `upload.url` with exactly `upload.headers`. The file lands in a random quarantine key.
+3. `POST /documents/{id}/complete` copies it to its final key and validates the copy: size matches, first bytes match PDF/JPEG/PNG. Failures are deleted and recorded. Only then does it become `Pending`.
+4. `GET /documents/{id}/download` returns a signed link valid 60 seconds, always served as an attachment. Each link issued is audited.
+
+**Rules (defaults, confirm with the hospital):** PDF, JPEG, PNG only, up to 10 MB. Owner and HR may download; HOD, director and super admin see details but not files. HR verifies or rejects, never their own or self-uploaded files. The owner may delete only Pending or Rejected documents; deletion is soft and the stored file is kept.
+
+**Setup:** set `STORAGE_BACKEND=r2` and `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (the bucket name). The bucket needs a CORS policy allowing `PUT` with the `Content-Type` header from your frontend's origin. With the default `STORAGE_BACKEND=local`, files go to `./.storage` and the same signed-link flow is served by the app itself (development only; disabled in production), so no R2 account is needed to develop.
+
+Not yet done: virus scanning (recommended before wide rollout; a ClamAV service is the usual route), backups of the bucket, and an automatic cleanup job for abandoned uploads (stale ones are currently swept when the same person starts a new upload).
 
 ## Security model
 
@@ -67,4 +84,4 @@ alembic/       migrations      tests/   pytest suite      app/seed.py   mock dat
 
 ## Not built yet
 
-Documents (upload and verification), payroll and payslips, promotions, queries, performance appraisals, notifications (email/SMS), exports (PDF/Excel/CSV), TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.
+Payroll and payslips, promotions, queries, performance appraisals, notifications (email/SMS), exports (PDF/Excel/CSV), TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.

@@ -3,6 +3,8 @@ import tempfile
 
 _tmp = tempfile.mkdtemp()
 os.environ["ENVIRONMENT"] = "test"
+os.environ["STORAGE_BACKEND"] = "local"
+os.environ["LOCAL_STORAGE_DIR"] = tempfile.mkdtemp()
 os.environ["SECRET_KEY"] = "test-secret-key-that-is-long-enough-for-hs256"
 os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL") or f"sqlite+aiosqlite:///{_tmp}/test.db"
 

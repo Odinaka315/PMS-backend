@@ -8,6 +8,7 @@ Demo logins mirror the frontend's: staff|hod|hr|director|superadmin@hospital.tes
 import asyncio
 import random
 import sys
+import uuid
 from datetime import date, timedelta
 
 from sqlalchemy import select
@@ -15,12 +16,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.security import encrypt_field, hash_password, utcnow
+from app.core.storage import LocalStorage, get_storage
 from app.models import (
-    Base, BankAccount, Dependant, Department, Education, EmergencyContact, GradeLevel, LeaveDecision, LeaveRequest,
+    Base, BankAccount, Dependant, Department, Document, Education, EmergencyContact, GradeLevel, LeaveDecision, LeaveRequest,
     LeaveType, LeaveWorkflowStep, MedicalLicense, Staff, User,
 )
 
 DEMO_PASSWORD = "hospital123"
+
+# A tiny but valid one-page PDF, used as the content of every mock document.
+MOCK_PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
+
+# (name, type, status, expiry) mirroring the frontend's mock documents.
+MOCK_DOCUMENTS = [
+    ("Medical License", "License", "Verified", date(2027, 8, 15)),
+    ("NYSC Certificate", "NYSC", "Verified", None),
+    ("Promotion Letter 2024", "Promotion", "Verified", None),
+    ("Appointment Letter", "Appointment", "Verified", None),
+    ("First Aid Certificate", "Certificate", "Pending", date(2026, 12, 1)),
+    ("Passport Photo", "Passport", "Verified", None),
+    ("National ID", "NIN", "Verified", None),
+    ("CV - 2025", "CV", "Rejected", None),
+]
 
 DEPARTMENTS = [
     ("MED", "Internal Medicine"), ("SUR", "Surgery"), ("PED", "Pediatrics"), ("RAD", "Radiology"),
@@ -189,6 +207,23 @@ async def seed(session: AsyncSession, extra_staff: int = 40) -> None:
         await session.flush()
         session.add(LeaveDecision(request_id=r.id, step_order=1, role="hod", decided_by=users["hod"].id,
                                   decision="approve", comment="Cover arranged", decided_at=now))
+
+    # Mock documents for the demo staff member. Files are only written when using local storage;
+    # with R2 there is nothing to seed because rows without real objects would break downloads.
+    storage = get_storage()
+    if isinstance(storage, LocalStorage):
+        for name, dtype, status, expiry in MOCK_DOCUMENTS:
+            doc_id = uuid.uuid4()
+            key = f"documents/{sarah.id}/{doc_id}"
+            storage.write(key, MOCK_PDF)
+            session.add(Document(
+                id=doc_id, staff_id=sarah.id, doc_type=dtype, name=name, original_filename=f"{name}.pdf",
+                content_type="application/pdf", declared_size=len(MOCK_PDF), size_bytes=len(MOCK_PDF), object_key=key,
+                status=status, expiry_date=expiry, uploaded_by=users["staff"].id,
+                verified_by=users["hr"].id if status != "Pending" else None,
+                verified_by_email="hr@hospital.test" if status != "Pending" else None,
+                verified_at=now if status != "Pending" else None,
+                rejection_reason="Scan is not legible; please upload a clearer copy." if status == "Rejected" else None))
 
     await session.commit()
     total = len(FRONTEND_STAFF) + extra_staff

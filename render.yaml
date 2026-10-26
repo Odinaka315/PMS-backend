@@ -18,5 +18,15 @@ services:
         sync: false
       - key: MIGRATION_DATABASE_URL # Neon direct connection string
         sync: false
+      - key: STORAGE_BACKEND
+        value: r2
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET              # name of the PRODUCTION bucket, e.g. pms-documents-prod
+        sync: false
       - key: CORS_ORIGINS           # e.g. ["https://pms.example.org"]
         sync: false

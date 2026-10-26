@@ -9,3 +9,4 @@ pydantic-settings==2.16.1
 argon2-cffi==25.1.0
 pyjwt==2.15.1
 cryptography==50.0.2
+boto3==1.43.118
