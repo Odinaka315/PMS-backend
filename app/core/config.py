@@ -30,13 +30,36 @@ class Settings(BaseSettings):
     retirement_age: int = 60
     retirement_service_years: int = 35
 
+    # Document storage. "local" keeps files in a folder (development/tests); "r2" uses Cloudflare R2.
+    storage_backend: str = "local"  # local | r2
+    local_storage_dir: str = "./.storage"
+    api_public_url: str = "http://localhost:8000"  # where the local backend's signed links point
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""  # the bucket's name exactly as shown in the Cloudflare dashboard
+    r2_endpoint_url: str = ""  # optional override (tests / other S3-compatible stores); default is derived from the account id
+    upload_url_seconds: int = 300  # how long a signed upload link works
+    download_url_seconds: int = 60  # how long a signed download link works
+    max_upload_bytes: int = 10 * 1024 * 1024
+    max_documents_per_staff: int = 100
+
     @model_validator(mode="after")
     def _production_guard(self):
+        if self.storage_backend not in ("local", "r2"):
+            raise ValueError("STORAGE_BACKEND must be 'local' or 'r2'")
+        if self.storage_backend == "r2":
+            missing = [n for n in ("r2_account_id", "r2_access_key_id", "r2_secret_access_key", "r2_bucket")
+                       if not getattr(self, n)]
+            if missing:
+                raise ValueError("STORAGE_BACKEND=r2 needs: " + ", ".join(m.upper() for m in missing))
         if self.environment == "production":
             if self.secret_key == DEV_SECRET or len(self.secret_key) < 32:
                 raise ValueError("SECRET_KEY must be set to a strong value (>=32 chars) in production")
             if not self.field_encryption_key:
                 raise ValueError("FIELD_ENCRYPTION_KEY must be set in production")
+            if self.storage_backend != "r2":
+                raise ValueError("STORAGE_BACKEND must be 'r2' in production")
         return self
 
 
