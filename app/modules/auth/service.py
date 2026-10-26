@@ -20,7 +20,8 @@ def user_out(user: User) -> UserOut:
     s = user.staff
     return UserOut(
         id=user.id, email=user.email, role=user.role, is_active=user.is_active,
-        must_change_password=user.must_change_password, staff_id=user.staff_id,
+        must_change_password=user.must_change_password, password_expires_at=user.password_expires_at,
+        staff_id=user.staff_id,
         name=s.full_name if s else "System Administrator",
         title=(s.designation if s else "Super Admin"),
         department=(s.department.name if s else "IT"),
@@ -68,6 +69,14 @@ async def login(session: AsyncSession, request: Request, email: str, password: s
         await session.commit()
         raise INVALID
 
+    if user.must_change_password and user.password_expires_at and as_utc(user.password_expires_at) < now:
+        # The password was right, so it is safe to say why it no longer works.
+        audit.record(session, user=None, user_email=email, action="login_blocked_password_expired", entity="user",
+                     entity_id=user.id, subject_staff_id=user.staff_id, request=request)
+        await session.commit()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Your initial password has expired. Please ask HR to reset it for you.")
+
     user.failed_attempts = 0
     user.locked_until = None
     user.last_login_at = now
@@ -105,20 +114,28 @@ async def revoke_all(session: AsyncSession, user_id) -> None:
                           .values(revoked_at=utcnow()))
 
 
-def validate_new_password(password: str, email: str) -> None:
+def validate_new_password(password: str, email: str, current: str | None = None) -> None:
     if len(password) < settings.min_password_length:
         raise HTTPException(422, f"Password must be at least {settings.min_password_length} characters")
-    if password.lower() == email.lower() or password.lower() in {"password", "hospital123", "12345678"}:
+    if current is not None and password == current:
+        raise HTTPException(422, "Your new password must be different from your current one")
+    weak = {"password", "hospital123", "12345678", settings.initial_password.lower()} - {""}
+    if password.lower() == email.lower() or password.lower() in weak:
         raise HTTPException(422, "Password is too easy to guess")
 
 
-async def change_password(session: AsyncSession, request: Request, user: User, current: str, new: str) -> None:
+async def change_password(session: AsyncSession, request: Request, user: User, current: str, new: str) -> TokenOut:
+    """Sets the user's own password, signs out every other device, and returns fresh tokens for this one so the
+    first-login flow (sign in -> choose a password) carries straight on without a second sign-in."""
     if not verify_password(user.password_hash, current):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect")
-    validate_new_password(new, user.email)
+    validate_new_password(new, user.email, current=current)
     user.password_hash = hash_password(new)
     user.must_change_password = False
+    user.password_expires_at = None
     await revoke_all(session, user.id)  # sign out other devices
+    tokens = await _issue_tokens(session, user, request)
     audit.record(session, user=user, action="password_changed", entity="user", entity_id=user.id,
                  subject_staff_id=user.staff_id, request=request)
     await session.commit()
+    return tokens

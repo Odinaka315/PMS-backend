@@ -17,8 +17,10 @@ from app.models import (
     AuditLog, BankAccount, Dependant, Department, Education, EmergencyContact, GradeLevel, MedicalLicense, Staff, User,
 )
 
+from app.modules.users.service import provision_account
+
 from .schemas import (
-    BankIn, BankOut, Computed, DependantIn, DependantOut, EducationIn, EducationOut, EmergencyContactIn, LicenseIn,
+    AccountInfo, StaffCreated, BankIn, BankOut, Computed, DependantIn, DependantOut, EducationIn, EducationOut, EmergencyContactIn, LicenseIn,
     LicenseOut, StaffCreate, StaffLookup, StaffPage, StaffProfile, StaffSelfUpdate, StaffSummary, StaffUpdate,
 )
 
@@ -202,10 +204,19 @@ async def update_my_profile(body: StaffSelfUpdate, request: Request, user: User 
     return await _apply_update(session, request, user, s, body.model_dump(exclude_unset=True))
 
 
-@router.post("", response_model=StaffProfile, status_code=201)
+def _account_info(u: User, temp: str | None) -> AccountInfo:
+    return AccountInfo(user_id=u.id, email=u.email, must_change_password=u.must_change_password,
+                       initial_password_expires_at=u.password_expires_at, temporary_password=temp)
+
+
+@router.post("", response_model=StaffCreated, status_code=201)
 async def create_staff(body: StaffCreate, request: Request, user: User = Depends(HR_ONLY),
                        session: AsyncSession = Depends(get_session)):
+    """Creates the staff record and, by default, their login in the same transaction: either both exist or neither.
+    The login name is the staff member's email; the starting password follows INITIAL_PASSWORD_MODE, and the person
+    must choose their own password at first sign-in."""
     data = body.model_dump()
+    want_account = data.pop("create_account") and settings.auto_create_accounts
     await _validate_refs(session, data)
     dept = await session.get(Department, body.department_id)
     file_number = (data.pop("file_number") or "").strip().upper()
@@ -221,8 +232,30 @@ async def create_staff(body: StaffCreate, request: Request, user: User = Depends
     await session.flush()
     audit.record(session, user=user, action="staff_created", entity="staff", entity_id=s.id, subject_staff_id=s.id,
                  after={"file_number": file_number, **_snapshot(s)}, request=request)
+
+    account, note, temp = None, None, None
+    if want_account and not (s.email or "").strip():
+        note = ("No email address was given, so no login was created. Add one, then use "
+                "POST /staff/{id}/account to create the login.")
+    elif want_account:
+        # Raises 409 on an email clash; nothing has been committed yet, so the staff record is not created either.
+        account, temp = await provision_account(session, staff=s, actor=user, request=request, automatic=True)
+    else:
+        note = "No login was created (create_account was off)."
     await session.commit()
-    return profile_out(user, await reload_staff(session, s.id))
+    profile = profile_out(user, await reload_staff(session, s.id))
+    return StaffCreated(**profile.model_dump(), account=_account_info(account, temp) if account else None,
+                        account_note=note)
+
+
+@router.post("/{ident}/account", response_model=AccountInfo, status_code=201)
+async def create_account_for_staff(ident: str, request: Request, user: User = Depends(HR_ONLY),
+                                   session: AsyncSession = Depends(get_session)):
+    """Create the login later: for staff added without an email, or with create_account off."""
+    s = await get_staff_or_404(session, ident)
+    account, temp = await provision_account(session, staff=s, actor=user, request=request)
+    await session.commit()
+    return _account_info(account, temp)
 
 
 # ---------------------------------------------------------------- one person

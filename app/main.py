@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.db import engine
+from app.core.deps import API_PREFIX
 from app.modules.auth.router import router as auth_router
 from app.modules.documents.dev_storage import router as dev_storage_router
 from app.modules.documents.router import router as documents_router
@@ -26,7 +27,7 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-API = "/api/v1"
+API = API_PREFIX
 for r in (auth_router, users_router, org_router, staff_router, leave_router, documents_router, reports_router):
     app.include_router(r, prefix=API)
 if settings.storage_backend == "local" and settings.environment != "production":

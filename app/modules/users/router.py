@@ -13,6 +13,7 @@ from app.core.security import generate_temp_password, hash_password
 from app.models import Staff, User
 from app.modules.auth.schemas import EMAIL_PATTERN, UserOut
 from app.modules.auth.service import revoke_all, user_out, validate_new_password
+from app.modules.users.service import initial_expiry
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -74,7 +75,7 @@ async def create_user(body: UserCreate, request: Request, actor: User = Depends(
         validate_new_password(password, email)
 
     user = User(email=email, password_hash=hash_password(password), role=body.role.value,
-                staff_id=body.staff_id, must_change_password=True)
+                staff_id=body.staff_id, must_change_password=True, password_expires_at=initial_expiry())
     session.add(user)
     await session.flush()
     audit.record(session, user=actor, action="user_created", entity="user", entity_id=user.id,
@@ -153,6 +154,7 @@ async def reset_password(user_id: uuid.UUID, request: Request,
     temp = generate_temp_password()
     user.password_hash = hash_password(temp)
     user.must_change_password = True
+    user.password_expires_at = initial_expiry()
     user.failed_attempts, user.locked_until = 0, None
     await revoke_all(session, user.id)
     audit.record(session, user=actor, action="password_reset", entity="user", entity_id=user.id,

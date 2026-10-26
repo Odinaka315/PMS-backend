@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +13,13 @@ from .security import decode_access_token
 
 bearer = HTTPBearer(auto_error=False)
 
+API_PREFIX = "/api/v1"
+# The only endpoints usable while a password change is pending: change it, see who you are, sign out.
+ALLOWED_WHILE_PASSWORD_CHANGE_PENDING = {"/auth/change-password", "/auth/me", "/auth/logout", "/auth/logout-all"}
+
 
 async def get_current_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: AsyncSession = Depends(get_session),
 ) -> User:
@@ -27,6 +32,10 @@ async def get_current_user(
     user = await session.scalar(select(User).where(User.id == uuid.UUID(payload["sub"])))
     if user is None or not user.is_active:
         raise unauthorized
+    if user.must_change_password and request.url.path.removeprefix(API_PREFIX) not in ALLOWED_WHILE_PASSWORD_CHANGE_PENDING:
+        # Enforced here, on the server: the frontend cannot be relied on to send the user to the change-password screen.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail={
+            "code": "password_change_required", "message": "You must choose a new password before continuing"})
     return user
 
 

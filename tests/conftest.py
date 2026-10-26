@@ -63,6 +63,10 @@ async def dept_id(client, hr, name):
     return next(d["id"] for d in r.json() if d["name"] == name)
 
 
+INITIAL_PASSWORD = "Initial-pass-1"   # what HR issues
+FINAL_PASSWORD = "S3cure-pass-1"      # what the person then chooses for themselves
+
+
 async def make_person(client, hr_headers, dept="Internal Medicine", role="staff", first="Test", account=True):
     """Creates a staff record plus an account (HR flow). Returns (staff_json, email, headers)."""
     import uuid
@@ -75,6 +79,13 @@ async def make_person(client, hr_headers, dept="Internal Medicine", role="staff"
     if not account:
         return staff, email, None
     r = await client.post(f"{API}/users", headers=hr_headers,
-                          json={"email": email, "role": role, "staff_id": staff["id"], "password": "S3cure-pass-1"})
+                          json={"email": email, "role": role, "staff_id": staff["id"], "password": INITIAL_PASSWORD})
     assert r.status_code == 201, r.text
-    return staff, email, await login(client, email, "S3cure-pass-1")
+    # A real first sign-in: until the person chooses their own password the account can do nothing else.
+    first_login = await client.post(f"{API}/auth/login", json={"email": email, "password": INITIAL_PASSWORD})
+    assert first_login.status_code == 200 and first_login.json()["user"]["must_change_password"] is True
+    changed = await client.post(
+        f"{API}/auth/change-password", headers={"Authorization": f"Bearer {first_login.json()['access_token']}"},
+        json={"current_password": INITIAL_PASSWORD, "new_password": FINAL_PASSWORD})
+    assert changed.status_code == 200, changed.text
+    return staff, email, {"Authorization": f"Bearer {changed.json()['access_token']}"}

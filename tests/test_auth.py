@@ -52,5 +52,5 @@ async def test_change_password(client, hr):
     assert bad.status_code == 400
     ok = await client.post(f"{API}/auth/change-password", headers=headers,
                            json={"current_password": "S3cure-pass-1", "new_password": "An0ther-pass-9"})
-    assert ok.status_code == 204
+    assert ok.status_code == 200 and ok.json()["access_token"] and ok.json()["refresh_token"]
     await login(client, email, "An0ther-pass-9")

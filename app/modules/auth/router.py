@@ -54,8 +54,8 @@ async def me(user: User = Depends(get_current_user)):
     return service.user_out(user)
 
 
-@router.post("/change-password", status_code=204)
+@router.post("/change-password", response_model=TokenOut)
 async def change_password(body: ChangePasswordIn, request: Request, user: User = Depends(get_current_user),
                           session: AsyncSession = Depends(get_session)):
-    await service.change_password(session, request, user, body.current_password, body.new_password)
-    return Response(status_code=204)
+    """Also the mandatory first step for a new account (see must_change_password). Returns new tokens."""
+    return await service.change_password(session, request, user, body.current_password, body.new_password)

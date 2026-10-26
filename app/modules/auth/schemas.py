@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     must_change_password: bool
+    password_expires_at: datetime | None = None  # when an initial/temporary password stops working
     staff_id: uuid.UUID | None
     # Mirrors the frontend's `User` type so useAuth can consume it directly.
     name: str | None = None

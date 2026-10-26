@@ -1,7 +1,9 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
+
+from app.modules.auth.schemas import EMAIL_PATTERN
 
 
 class StaffSummary(BaseModel):
@@ -38,7 +40,7 @@ class StaffCreate(BaseModel):
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(min_length=1, max_length=80)
     other_names: str | None = None
-    email: str | None = None
+    email: str | None = Field(default=None, pattern=EMAIL_PATTERN, max_length=255)  # also the login name
     phone: str | None = None
     date_of_birth: date | None = None
     gender: str | None = None
@@ -54,6 +56,8 @@ class StaffCreate(BaseModel):
     employment_date: date | None = None
     confirmation_date: date | None = None
     supervisor_id: uuid.UUID | None = None
+    # Create the staff member's login automatically (needs an email address). Untick for people who won't use the portal.
+    create_account: bool = True
 
 
 class StaffUpdate(BaseModel):
@@ -62,7 +66,7 @@ class StaffUpdate(BaseModel):
     first_name: str | None = Field(default=None, min_length=1, max_length=80)
     last_name: str | None = Field(default=None, min_length=1, max_length=80)
     other_names: str | None = None
-    email: str | None = None
+    email: str | None = Field(default=None, pattern=EMAIL_PATTERN, max_length=255)
     phone: str | None = None
     date_of_birth: date | None = None
     gender: str | None = None
@@ -147,6 +151,16 @@ class Computed(BaseModel):
     time_to_retirement_label: str | None
 
 
+class AccountInfo(BaseModel):
+    """The login created for a staff member."""
+    user_id: uuid.UUID
+    email: str  # the login name
+    must_change_password: bool
+    initial_password_expires_at: datetime | None
+    # Only in INITIAL_PASSWORD_MODE=random: the one-time password for HR to hand over. Never shown again.
+    temporary_password: str | None = None
+
+
 class StaffProfile(BaseModel):
     """Aggregate for the Profile pages' tabs (Personal, Employment, Education, License, Emergency, Dependants, Bank)."""
     id: uuid.UUID
@@ -162,3 +176,8 @@ class StaffProfile(BaseModel):
     dependants: list[DependantOut]
     bank: BankOut | None
     computed: Computed
+
+
+class StaffCreated(StaffProfile):
+    account: AccountInfo | None = None
+    account_note: str | None = None  # why no account was created, when none was

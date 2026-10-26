@@ -140,9 +140,11 @@ def test_settings_guards():
     with pytest.raises(ValueError, match="R2_BUCKET"):
         Settings(storage_backend="r2", r2_account_id="a", r2_access_key_id="b", r2_secret_access_key="c")
     with pytest.raises(ValueError, match="STORAGE_BACKEND must be 'r2'"):
-        Settings(environment="production", secret_key="s" * 40, field_encryption_key="k", storage_backend="local")
+        Settings(environment="production", secret_key="s" * 40, field_encryption_key="k", storage_backend="local",
+                 initial_password="Some-initial-pw")
     with pytest.raises(ValueError, match="local' or 'r2"):
         Settings(storage_backend="s3")
     ok = Settings(environment="production", secret_key="s" * 40, field_encryption_key="k", storage_backend="r2",
-                  r2_account_id="a", r2_access_key_id="b", r2_secret_access_key="c", r2_bucket="d")
+                  r2_account_id="a", r2_access_key_id="b", r2_secret_access_key="c", r2_bucket="d",
+                  initial_password="Some-initial-pw")
     assert ok.storage_backend == "r2"

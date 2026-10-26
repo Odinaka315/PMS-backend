@@ -9,7 +9,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m app.seed --reset        # SQLite file dev.db + mock data
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
-pytest                            # 62 tests
+pytest                            # 85 tests
 ```
 
 Demo logins (same as the frontend): `staff|hod|hr|director|superadmin@hospital.test`, password `hospital123`.
@@ -46,7 +46,7 @@ alembic/       migrations      tests/   pytest suite      app/seed.py   mock dat
 | Auth | `POST /auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/logout-all`, `/auth/change-password`; `GET /auth/me` |
 | Users (HR, super admin) | `POST/GET /users`, `PATCH /users/{id}`, `POST /users/{id}/reset-password`, `GET /users/summary` |
 | Org | `GET/POST /departments`, `GET /grades` |
-| Staff | `GET /staff` (search, filters, paging), `POST /staff`, `GET/PATCH/DELETE /staff/{id or file number}`, `GET/PATCH /staff/me`, `GET /staff/lookup`, `GET /staff/{id}/audit`, education / dependants / emergency-contact / license / bank sub-resources |
+| Staff | `GET /staff` (search, filters, paging), `POST /staff` (also creates the login), `POST /staff/{id}/account`, `GET/PATCH/DELETE /staff/{id or file number}`, `GET/PATCH /staff/me`, `GET /staff/lookup`, `GET /staff/{id}/audit`, education / dependants / emergency-contact / license / bank sub-resources |
 | Leave | `GET /leave/types`, `/leave/balance`; `POST/GET /leave/requests` (`?awaiting_me=true`), `GET /leave/requests/{id}`, `POST …/decision`, `POST …/cancel` |
 | Documents | `POST /staff/{id}/documents` (start an upload), `POST /documents/{id}/complete`, `GET /staff/{id}/documents`, `GET /documents/{id}`, `GET /documents/{id}/download`, `POST /documents/{id}/verify`, `DELETE /documents/{id}`, `GET /documents/expiring` |
 | Reports | `GET /reports/dashboard` (role-aware KPIs and chart data) |
@@ -66,6 +66,34 @@ short-lived signed links, so file bytes never pass through this server.
 **Setup:** set `STORAGE_BACKEND=r2` and `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (the bucket name). The bucket needs a CORS policy allowing `PUT` with the `Content-Type` header from your frontend's origin. With the default `STORAGE_BACKEND=local`, files go to `./.storage` and the same signed-link flow is served by the app itself (development only; disabled in production), so no R2 account is needed to develop.
 
 Not yet done: virus scanning (recommended before wide rollout; a ClamAV service is the usual route), backups of the bucket, and an automatic cleanup job for abandoned uploads (stale ones are currently swept when the same person starts a new upload).
+
+## Accounts and first sign-in
+
+When HR creates a staff record (`POST /staff`) the staff member's login is created in the same transaction, so either both
+exist or neither does. The login name is the staff member's **email**, the role is `staff`, and the password is the initial
+password (stored hashed with Argon2, like every password). The response includes an `account` block, or an `account_note`
+saying why no login was made (no email, or `create_account: false`). Add the email later and call `POST /staff/{id}/account`.
+
+First sign-in: `POST /auth/login` returns `must_change_password: true`. Until the person has chosen their own password, **every
+other endpoint answers 403** with `{"detail": {"code": "password_change_required", ...}}`; only `/auth/me`, `/auth/logout`,
+`/auth/logout-all` and `/auth/change-password` work. The frontend should send the user to a change-password screen when it sees
+that flag or code. `POST /auth/change-password` signs out every other device and returns fresh tokens, so no second sign-in is needed.
+The new password must differ from the current one, meet the minimum length, and not be the initial password.
+
+An initial password that is never used stops working after `INITIAL_PASSWORD_DAYS` (default 14); HR resets it with
+`POST /users/{id}/reset-password`.
+
+| Setting | Meaning |
+|---|---|
+| `INITIAL_PASSWORD_MODE=shared` | every new account starts with `INITIAL_PASSWORD` (default outside production: `hospital123`; **must be set explicitly in production**) |
+| `INITIAL_PASSWORD_MODE=random` | each account gets its own one-time password, shown once to HR in the `account.temporary_password` field |
+| `INITIAL_PASSWORD_DAYS` | how long an unused initial password works (default 14) |
+| `AUTO_CREATE_ACCOUNTS` | turn automatic account creation off entirely |
+
+**Know the risk of `shared`:** anyone who knows the initial password and a new colleague's email can sign in first, choose their own
+password, and take over that account before the real person does. The expiry window limits how long this is possible but does
+not remove it. `random` closes the gap, because the password is different for every person and only HR sees it.
+`hospital123` is also the demo password published in the frontend's README, so do not use it in production.
 
 ## Security model
 

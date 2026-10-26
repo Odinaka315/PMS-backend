@@ -17,6 +17,8 @@ class User(IdMixin, TimestampMixin, Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set while the password is an admin-issued initial/temporary one; after this moment it no longer works.
+    password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Reserved for TOTP two-factor (not yet enforced).
     totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
