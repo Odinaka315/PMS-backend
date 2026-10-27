@@ -9,7 +9,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m app.seed --reset        # SQLite file dev.db + mock data
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
-pytest                            # 138 tests
+pytest                            # 191 tests
 ```
 
 Demo logins (same as the frontend): `staff|hod|hr|director|superadmin@hospital.test`, password `hospital123`.
@@ -35,7 +35,7 @@ Tested against PostgreSQL 16 as well as SQLite.
 ```
 app/core/      config, db, security (argon2, JWT, field encryption), deps (RBAC + data scope), audit
 app/models/    SQLAlchemy models
-app/modules/   auth, users, org, staff, leave, documents, payroll, notifications, reports   (router.py [+ schemas.py, service.py])
+app/modules/   auth, users, org, staff, leave, documents, payroll, notifications, queries, performance, reports   (router.py [+ schemas.py, service.py])
 alembic/       migrations      tests/   pytest suite      app/seed.py   mock data
 ```
 
@@ -51,6 +51,8 @@ alembic/       migrations      tests/   pytest suite      app/seed.py   mock dat
 | Documents | `POST /staff/{id}/documents` (start an upload), `POST /documents/{id}/complete`, `GET /staff/{id}/documents`, `GET /documents/{id}`, `GET /documents/{id}/download`, `POST /documents/{id}/verify`, `DELETE /documents/{id}`, `GET /documents/expiring` |
 | Payroll | `GET/PUT /payroll/scales`, `GET/POST /payroll/components`, `PUT /payroll/components/{id}`, `POST/GET /payroll/adjustments`, `DELETE /payroll/adjustments/{id}`, `POST/GET /payroll/runs`, `GET/DELETE /payroll/runs/{id}`, `POST …/recalculate`, `…/approve`, `…/pay`, `GET …/payslips`, `GET …/export` (CSV), `GET /payroll/summary`, `GET /payroll/payslips/me`, `GET /payroll/payslips/{id}` |
 | Notifications | `GET /notifications` (`?unread_only=true&type=`), `GET /notifications/unread-count`, `POST /notifications/{id}/read`, `POST /notifications/read-all`, `DELETE /notifications/{id}`, `POST /notifications/sweep` (HR) |
+| Queries | `POST/GET /queries` (`?status=&awaiting_me=true&overdue=true&mine=true`), `GET /queries/summary`, `GET /queries/{id}`, `POST …/reply`, `…/resolve`, `…/appeal`, `…/appeal-decision`, `…/withdraw`, `GET /staff/{id}/queries` |
+| Performance | `POST/GET /performance/cycles`, `PUT …/{id}` (draft only), `POST …/{id}/open`, `…/sync`, `…/close`; `GET /performance/appraisals` (`?cycle=&mine=true&awaiting_me=true`), `GET …/{id}`, `POST …/{id}/self-assessment`, `…/review`, `…/finalise`, `…/return`, `…/acknowledge`, `PUT …/{id}/appraiser`; `GET /performance/history`, `GET /performance/summary`; goals: `POST/GET /performance/goals`, `PATCH/DELETE …/{id}` |
 | Reports | `GET /reports/dashboard` (role-aware KPIs and chart data) |
 
 ## Documents and Cloudflare R2
@@ -142,6 +144,44 @@ rejected action tells nobody anything:
 There is no background scheduler yet, so the expiry sweep is called by hand (safe to repeat) and can be wired to a scheduled
 job later. Email and SMS are not built, so the frontend's email/frequency toggles have nothing behind them yet.
 
+## Queries
+
+A query is a formal request for a staff member to explain something. **Every rule below is a placeholder to confirm with the
+hospital.** `Pending Reply -> Replied -> Resolved -> (Appealed -> Resolved)`, or `Withdrawn` while still open.
+
+- **Issue:** an HOD to staff in their own department, HR or the director to anyone; never to yourself. Reply deadline defaults to
+  `QUERY_REPLY_DAYS` (3) and can be set up to 30 days ahead.
+- **Reply:** only the person queried. **Resolve** (Cleared, Warning, Reprimand, Further Action): HR or the director, only after a
+  reply or a missed deadline, and never the person queried or whoever issued it. **Appeal:** only the person queried, once, within
+  `QUERY_APPEAL_DAYS` (14) of an adverse outcome. **Decide the appeal:** director or super admin, never the person queried, the
+  issuer or the resolver; an overturned appeal makes the standing outcome Cleared. **Withdraw:** HR or director, with a reason.
+- Visible to the person queried, their HOD, HR, director and super admin (same data scope as the staff record); everyone else gets
+  404. Reading someone else's query is audited. Queries are never deleted, and each has its own timeline of what was said.
+- Notifications carry no query titles or details, only that something needs attention.
+
+## Performance appraisals
+
+**The form and rating bands are placeholders.** HR creates a **cycle** (for example "Annual Appraisal 2026") with weighted criteria
+(default: quality of work 30, client feedback 20, attendance 15, teamwork 15, training 10, initiative 10) and rating bands (default:
+90+ Excellent, 75+ Very Good, 60+ Good, 50+ Fair, below Poor), both replaceable per cycle and frozen when it opens. Opening
+creates an appraisal for every Active or On Leave staff member (`/sync` adds later joiners) and assigns an appraiser: the
+person's supervisor if they can appraise, else the department's HOD; HODs and HR officers go to the director, a director to the
+super admin. HR can reassign (`PUT …/appraiser`) until it is scored.
+
+Flow: `Not Started -> Self-Assessed -> Reviewed -> Finalised`, then the person acknowledges. The person self-assesses (can resubmit
+until the appraiser starts); the assigned appraiser scores (after the self-assessment, or after the cycle's self-assessment
+deadline without one); HR or the director finalises, never the appraiser or the person, and can send a scored appraisal back with a
+reason. Scores are whole numbers 0-100 per criterion; the final score is the weighted average of the appraiser's scores.
+**The person appraised sees only their own self-assessment until it is Finalised**: the score, rating and the appraiser's
+comments are hidden from them before that, and the internal "returned" note is never shown to them. Visibility otherwise follows the
+staff data scope, plus the assigned appraiser. Viewing someone else's appraisal is audited, and comments are never copied into the
+audit trail. `GET /performance/history` returns finalised results over the years (the data a promotion rule would use later),
+and `GET /performance/summary` gives progress, rating spread and department averages within the caller's scope.
+
+**Goals** (the frontend's "Add goal"): a person sets their own; an HOD can set them for their department and HR for anyone. The
+owner can update progress (100% marks it Achieved); only the creator or HR can delete. Not built: monthly performance scores
+(the frontend's monthly chart has no source yet, so history is per cycle), 360-degree feedback, training records.
+
 ## Security model
 
 - **Roles:** staff, hod, hr, director, superadmin. **Data scope** is enforced in the query layer: staff see themselves, an HOD sees their department, HR/director/superadmin see everyone. Out-of-scope records return 404, not 403.
@@ -156,8 +196,10 @@ job later. Email and SMS are not built, so the frontend's email/frequency toggle
 - **Retirement:** 60 years of age or 35 years of service, whichever is first (`RETIREMENT_AGE`, `RETIREMENT_SERVICE_YEARS`).
 - **Departments, grade levels (CONHESS 1–15), designations** are mock; replace via the API or seed.
 - **Payroll:** the scale, allowances, deductions, who is paid (Active and On Leave only) and the tax rate are placeholders (see Payroll).
+- **Queries:** who may issue and resolve, the reply deadline (3 days), the appeal window (14 days) and the outcome list.
+- **Appraisals:** the criteria and weights, the 0-100 scale, the rating bands, who appraises whom, and who finalises.
 - **Promotion rules:** not built yet, waiting on real rules.
 
 ## Not built yet
 
-Promotions, queries, performance appraisals, email/SMS notifications and a scheduler, PDF payslips and bank transfer files, TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.
+Promotions, training records, email/SMS notifications and a scheduler, PDF payslips and bank transfer files, TOTP two-factor, superadmin system tools (backup, config), and the frontend API client.

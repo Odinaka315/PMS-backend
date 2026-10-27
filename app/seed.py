@@ -20,6 +20,7 @@ from app.core.storage import LocalStorage, get_storage
 from app.models import (
     Base, BankAccount, Dependant, Department, Document, Education, EmergencyContact, GradeLevel, LeaveDecision, LeaveRequest,
     LeaveType, LeaveWorkflowStep, MedicalLicense, Notification, PayComponent, PayrollRun, SalaryScale, Staff, User,
+    Appraisal, AppraisalCycle, PerformanceGoal, QueryEvent, StaffQuery,
 )
 
 DEMO_PASSWORD = "hospital123"
@@ -119,6 +120,93 @@ async def seed_payroll(session: AsyncSession, users: dict[str, User], grades: di
         Notification(user_id=users["hr"].id, type="document", title="Document awaiting verification",
                      text="A First Aid Certificate was uploaded.", link="/documents", created_at=now - timedelta(hours=5)),
     ])
+
+
+async def seed_queries_and_performance(session: AsyncSession, users: dict[str, User], sarah: Staff, hod: Staff) -> None:
+    """Mirrors the frontend's mock queries, goals and appraisal history, and opens this year's appraisal cycle."""
+    from app.modules.performance import rules as prules
+    from app.modules.performance.router import _add_missing
+
+    now = utcnow()
+    today = date.today()
+
+    def query(title, text, severity, status, days_ago, issuer, due_in=3, outcome=None, resolver=None, appealed=False):
+        q = StaffQuery(staff_id=sarah.id, title=title, description=text, severity=severity, status=status,
+                       issued_by=users[issuer].id, reply_due=today + timedelta(days=due_in), outcome=outcome,
+                       created_at=now - timedelta(days=days_ago), updated_at=now - timedelta(days=days_ago))
+        session.add(q)
+        return q, resolver, appealed
+
+    rows = [
+        query("Attendance Irregularity", "You were absent from the ward on three occasions last week without notice.",
+              "Medium", "Pending Reply", 10, "hod", due_in=2),
+        query("Late Submission of Report", "The monthly clinical report was submitted two weeks late.", "Low", "Resolved",
+              150, "hod", due_in=-140, outcome="Cleared", resolver="hr"),
+        query("Patient Complaint", "A patient's family complained about communication during a ward round.", "High",
+              "Appealed", 200, "hr", due_in=-190, outcome="Warning", resolver="director", appealed=True),
+    ]
+    await session.flush()
+    for q, resolver, appealed in rows:
+        who = next(r for r in users if users[r].id == q.issued_by)
+        session.add(QueryEvent(query_id=q.id, kind="issued", by_user=q.issued_by, by_email=f"{who}@hospital.test",
+                               by_role=who, text=q.description, at=q.created_at))
+        if q.status == "Pending Reply":
+            continue
+        session.add(QueryEvent(query_id=q.id, kind="reply", by_user=users["staff"].id, by_email="staff@hospital.test",
+                               by_role="staff", text="Please see my explanation; I had informed the ward sister.",
+                               at=q.created_at + timedelta(days=2)))
+        q.replied_at = q.created_at + timedelta(days=2)
+        q.resolved_by, q.resolved_at = users[resolver].id, q.created_at + timedelta(days=5)
+        session.add(QueryEvent(query_id=q.id, kind="resolved", by_user=users[resolver].id,
+                               by_email=f"{resolver}@hospital.test", by_role=resolver, text="Reviewed with the reply.",
+                               detail=q.outcome, at=q.resolved_at))
+        if appealed:
+            q.appealed_at = q.resolved_at + timedelta(days=3)
+            session.add(QueryEvent(query_id=q.id, kind="appeal", by_user=users["staff"].id, by_email="staff@hospital.test",
+                                   by_role="staff", text="The complaint did not reflect what happened.", at=q.appealed_at))
+
+    session.add_all([
+        PerformanceGoal(staff_id=sarah.id, title="Clinical quality", target="Keep audit score at or above 95%",
+                        progress=96, status="Active", created_by=users["staff"].id),
+        PerformanceGoal(staff_id=sarah.id, title="Patient feedback", target="Maintain a 90%+ satisfaction rating",
+                        progress=92, status="Active", created_by=users["hod"].id),
+        PerformanceGoal(staff_id=sarah.id, title="Training completion", target="Complete the annual mandatory modules",
+                        progress=88, status="Active", created_by=users["staff"].id),
+    ])
+
+    # Two past cycles with finalised results for the demo staff member, so the history chart has data.
+    for yr, scores in ((today.year - 2, [90, 88, 95, 92, 85, 90]), (today.year - 1, [94, 92, 96, 93, 90, 95])):
+        cycle = AppraisalCycle(name=f"Annual Appraisal {yr}", year=yr, status="Closed", start_date=date(yr, 1, 1),
+                               end_date=date(yr, 12, 31), self_deadline=date(yr, 12, 1),
+                               criteria=[dict(c) for c in prules.DEFAULT_CRITERIA],
+                               rating_bands=[dict(b) for b in prules.DEFAULT_BANDS], created_by=users["hr"].id,
+                               opened_at=now - timedelta(days=365 * (today.year - yr)), closed_at=now - timedelta(days=365 * (today.year - yr) - 30))
+        session.add(cycle)
+        await session.flush()
+        mine = {c["key"]: v for c, v in zip(cycle.criteria, scores)}
+        total = prules.weighted_x100(mine, cycle.criteria)
+        session.add(Appraisal(cycle_id=cycle.id, staff_id=sarah.id, department="Internal Medicine",
+                              appraiser_user_id=users["hod"].id, status="Finalised", self_scores=mine, self_comment="Good year.",
+                              self_submitted_at=cycle.opened_at, appraiser_scores=mine, appraiser_comment="Consistently strong.",
+                              reviewed_by=users["hod"].id, reviewed_at=cycle.opened_at, score_x100=total,
+                              rating=prules.rating_for(total, cycle.rating_bands), finalised_by=users["hr"].id,
+                              finalised_at=cycle.closed_at, acknowledged_at=cycle.closed_at))
+
+    # This year's cycle is open: the demo staff member has yet to self-assess, one colleague is waiting for the HOD.
+    cur = AppraisalCycle(name=f"Annual Appraisal {today.year}", year=today.year, status="Open",
+                         start_date=date(today.year, 1, 1), end_date=date(today.year, 12, 31),
+                         self_deadline=date(today.year, 12, 1), criteria=[dict(c) for c in prules.DEFAULT_CRITERIA],
+                         rating_bands=[dict(b) for b in prules.DEFAULT_BANDS], created_by=users["hr"].id, opened_at=now)
+    session.add(cur)
+    await session.flush()
+    await _add_missing(session, cur)
+    waiting = (await session.scalars(select(Appraisal).join(Staff, Staff.id == Appraisal.staff_id).where(
+        Appraisal.cycle_id == cur.id, Staff.department_id == hod.department_id, Appraisal.staff_id.notin_([sarah.id, hod.id]))
+        .order_by(Staff.file_number).limit(1))).first()
+    if waiting:
+        waiting.status, waiting.self_submitted_at = "Self-Assessed", now
+        waiting.self_scores = {c["key"]: 80 for c in cur.criteria}
+        waiting.self_comment = "Met all my targets this year."
 
 
 async def seed(session: AsyncSession, extra_staff: int = 40) -> None:
@@ -272,6 +360,7 @@ async def seed(session: AsyncSession, extra_staff: int = 40) -> None:
                 rejection_reason="Scan is not legible; please upload a clearer copy." if status == "Rejected" else None))
 
     await seed_payroll(session, users, grades)
+    await seed_queries_and_performance(session, users, sarah, hod)
     await session.commit()
     total = len(FRONTEND_STAFF) + extra_staff
     print(f"Seeded {len(DEPARTMENTS)} departments, {total} staff, {len(accounts)} demo accounts "

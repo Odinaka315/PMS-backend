@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     auto_create_accounts: bool = True  # create a login automatically when HR creates a staff record
 
     # PLACEHOLDER policy values, to be confirmed by the hospital.
+    query_reply_days: int = 3  # default time a staff member has to answer a query
+    query_appeal_days: int = 14  # how long after a query is resolved against them they may appeal
     retirement_age: int = 60
     retirement_service_years: int = 35
 

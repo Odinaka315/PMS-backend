@@ -12,6 +12,8 @@ from app.modules.leave.router import router as leave_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.org.router import router as org_router
 from app.modules.payroll.router import router as payroll_router
+from app.modules.performance.router import router as performance_router
+from app.modules.queries.router import router as queries_router
 from app.modules.reports.router import router as reports_router
 from app.modules.staff.router import router as staff_router
 from app.modules.users.router import router as users_router
@@ -41,7 +43,7 @@ async def no_store(request, call_next):
         response.headers["Pragma"] = "no-cache"
     return response
 
-for r in (auth_router, users_router, org_router, staff_router, leave_router, documents_router, notifications_router, payroll_router,
+for r in (auth_router, users_router, org_router, staff_router, leave_router, documents_router, notifications_router, payroll_router, performance_router, queries_router,
           reports_router):
     app.include_router(r, prefix=API)
 if settings.storage_backend == "local" and settings.environment != "production":
